@@ -144,7 +144,13 @@ class ChatSession(QObject):
 
                     # Send length followed by binary data
                     length = len(chunk)
-                    length_bytes = struct.pack("!I", length)  # 4-byte integer
+                    # Convert length to bytes manually (4 bytes, big endian)
+                    length_bytes = (
+                        (length >> 24 & 0xFF).to_bytes(1, byteorder="big")
+                        + (length >> 16 & 0xFF).to_bytes(1, byteorder="big")
+                        + (length >> 8 & 0xFF).to_bytes(1, byteorder="big")
+                        + (length & 0xFF).to_bytes(1, byteorder="big")
+                    )
                     self.conn.sendall(length_bytes)
                     self.conn.sendall(chunk)  # Send raw binary
 
