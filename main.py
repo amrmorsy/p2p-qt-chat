@@ -126,47 +126,79 @@ class ChatSession(QObject):
             self.new_message.emit("[Send Failed]")
 
     def send_file(self, filepath):
-        """Send a file to the connected peer with improved framing"""
+        """Send a file using a simpler protocol"""
         try:
-            # Get file details
             filename = os.path.basename(filepath)
             filesize = os.path.getsize(filepath)
 
-            # Send file header with newline delimiter
-            header = f"{FILE_HEADER}{filename}:{filesize}\n"
+            # Send header
+            header = f"FILE:{filename}:{filesize}\n"
             self.conn.sendall(header.encode())
 
-            # Send file in chunks
-            bytes_sent = 0
+            # Send binary data with length prefix
             with open(filepath, "rb") as f:
-                self.new_message.emit(f"[Sending file: {filename}]")
-
-                while bytes_sent < filesize:
-                    # Read a chunk of data
+                while True:
                     chunk = f.read(MAX_FILE_CHUNK_SIZE)
                     if not chunk:
                         break
 
-                    # Encode the chunk for sending over text-based protocol
-                    encoded_chunk = base64.b64encode(chunk).decode()
+                    # Send length followed by binary data
+                    length = len(chunk)
+                    length_bytes = struct.pack("!I", length)  # 4-byte integer
+                    self.conn.sendall(length_bytes)
+                    self.conn.sendall(chunk)  # Send raw binary
 
-                    # Include the length of the encoded data for proper framing
-                    chunk_msg = f"{FILE_CHUNK}{len(encoded_chunk)}:{encoded_chunk}"
-                    self.conn.sendall(chunk_msg.encode())
-
-                    bytes_sent += len(chunk)
-                    # Optionally wait for acknowledgment here
-
-            # Send file end marker with newline
-            self.conn.sendall(f"{FILE_END}{filename}\n".encode())
-            self.new_message.emit(f"[File sent: {filename}]")
+            # Send end marker
+            self.conn.sendall(b"ENDFILE\n")
 
         except Exception as e:
-            print(f"[FILE SEND ERROR] {e}")
-            import traceback
+            print(f"[ERROR] {e}")
 
-            traceback.print_exc()
-            self.new_message.emit(f"[Failed to send file: {e}]")
+    # def send_file(self, filepath):
+    #     """Send a file to the connected peer with improved framing"""
+    #     try:
+    #         # Get file details
+    #         filename = os.path.basename(filepath)
+    #         filesize = os.path.getsize(filepath)
+
+    #         # Send file header with newline delimiter
+    #         header = f"{FILE_HEADER}{filename}:{filesize}\n"
+    #         self.conn.sendall(header.encode())
+
+    #         # Send file in chunks
+    #         bytes_sent = 0
+    #         chunk_count = 0
+    #         with open(filepath, "rb") as f:
+    #             self.new_message.emit(f"[Sending file: {filename}]")
+
+    #             while bytes_sent < filesize:
+    #                 # Read a chunk of data
+    #                 chunk = f.read(MAX_FILE_CHUNK_SIZE)
+    #                 if not chunk:
+    #                     break
+
+    #                 # Encode the chunk for sending over text-based protocol
+    #                 encoded_chunk = base64.b64encode(chunk).decode()
+
+    #                 # Include the length of the encoded data for proper framing
+    #                 # Add newline delimiter for each chunk
+    #                 chunk_msg = f"{FILE_CHUNK}{len(encoded_chunk)}:{encoded_chunk}\n"
+    #                 self.conn.sendall(chunk_msg.encode())
+
+    #                 bytes_sent += len(chunk)
+    #                 chunk_count += 1
+    #                 print(f"[DEBUG] Sent chunk {chunk_count}, size: {len(chunk)} bytes")
+
+    #         # Send file end marker with newline
+    #         self.conn.sendall(f"{FILE_END}{filename}\n".encode())
+    #         self.new_message.emit(f"[File sent: {filename}]")
+
+    #     except Exception as e:
+    #         print(f"[FILE SEND ERROR] {e}")
+    #         import traceback
+
+    #         traceback.print_exc()
+    #         self.new_message.emit(f"[Failed to send file: {e}]")
 
     def receive_loop(self):
         """Background thread that receives messages with improved buffer handling"""
@@ -232,29 +264,40 @@ class ChatSession(QObject):
 
                     # FILE CHUNK
                     elif buffer.startswith(FILE_CHUNK) and self.current_file:
-                        # Format: "CHUNK:<length>:<base64data>"
-                        first_colon = buffer.find(":", len(FILE_CHUNK))
-                        if first_colon == -1:
-                            break  # Incomplete header
+                        # Format: "CHUNK:<length>:<base64data>\n"
+                        # Look for newline to ensure we have a complete chunk message
+                        nl_index = buffer.find("\n", len(FILE_CHUNK))
+                        if nl_index == -1:
+                            print("[DEBUG] Waiting for complete chunk message")
+                            break  # Wait for more data
 
-                        second_colon = buffer.find(":", first_colon + 1)
+                        # Now parse the chunk header
+                        header_part = buffer[:nl_index]
+                        first_colon = header_part.find(":", len(FILE_CHUNK))
+                        if first_colon == -1:
+                            print(
+                                "[ERROR] Malformed chunk header - missing first colon"
+                            )
+                            buffer = buffer[nl_index + 1 :]  # Skip this message
+                            continue
+
+                        second_colon = header_part.find(":", first_colon + 1)
                         if second_colon == -1:
-                            break  # Incomplete header
+                            print(
+                                "[ERROR] Malformed chunk header - missing second colon"
+                            )
+                            buffer = buffer[nl_index + 1 :]  # Skip this message
+                            continue
 
                         try:
-                            chunk_length = int(buffer[first_colon + 1 : second_colon])
+                            # Extra debug info
+                            length_str = header_part[first_colon + 1 : second_colon]
+                            print(f"[DEBUG] Trying to parse length: '{length_str}'")
 
-                            # Check if we have the complete chunk data
-                            if len(buffer) < second_colon + 1 + chunk_length:
-                                print(
-                                    f"[DEBUG] Waiting for complete chunk: have {len(buffer) - second_colon - 1}/{chunk_length}"
-                                )
-                                break  # Wait for more data
+                            chunk_length = int(length_str)
 
-                            # Extract the chunk
-                            encoded_chunk = buffer[
-                                second_colon + 1 : second_colon + 1 + chunk_length
-                            ]
+                            # Extract the chunk data
+                            encoded_chunk = header_part[second_colon + 1 :]
 
                             # Process the chunk
                             try:
@@ -269,26 +312,23 @@ class ChatSession(QObject):
                                     self.file_size,
                                 )
 
+                                print(
+                                    f"[DEBUG] Received chunk: {len(chunk)} bytes, total: {self.bytes_received}/{self.file_size}"
+                                )
+
                                 # Remove processed data
-                                buffer = buffer[second_colon + 1 + chunk_length :]
+                                buffer = buffer[nl_index + 1 :]
 
                                 continue  # Process more if available
 
                             except Exception as e:
                                 print(f"[ERROR] Failed to decode chunk: {e}")
-                                # Skip this chunk and try to recover
-                                buffer = buffer[second_colon + 1 + chunk_length :]
+                                buffer = buffer[nl_index + 1 :]  # Skip this chunk
 
                         except ValueError as e:
                             print(f"[ERROR] Invalid chunk length: {e}")
-                            # Try to recover by skipping to next line
-                            next_line = buffer.find("\n", len(FILE_CHUNK))
-                            if next_line != -1:
-                                buffer = buffer[next_line + 1 :]
-                            else:
-                                # If recovery fails, clear buffer and start fresh
-                                buffer = ""
-                                break
+                            print(f"[DEBUG] Full buffer content: {buffer[:100]}...")
+                            buffer = buffer[nl_index + 1 :]  # Skip this message
 
                     # FILE END
                     elif buffer.startswith(FILE_END) and self.current_file:
@@ -362,6 +402,24 @@ class ChatSession(QObject):
 
         self.new_message.emit("[Connection Closed]")
         self.conn.close()
+
+    def debug_buffer(self, buffer, max_len=100):
+        """Helper to print buffer content in a readable way"""
+        if not buffer:
+            return "EMPTY"
+
+        # Replace non-printable chars with their hex values
+        printable = ""
+        for i, c in enumerate(buffer[:max_len]):
+            if 32 <= ord(c) <= 126:  # printable ASCII
+                printable += c
+            else:
+                printable += f"\\x{ord(c):02x}"
+
+        if len(buffer) > max_len:
+            printable += "..."
+
+        return printable
 
 
 class ChatWindow(QDialog):
