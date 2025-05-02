@@ -125,86 +125,86 @@ class ChatSession(QObject):
             print(f"[SEND ERROR] {e}")
             self.new_message.emit("[Send Failed]")
 
-    def send_file(self, filepath):
-        """Send a file using a simpler protocol"""
-        try:
-            filename = os.path.basename(filepath)
-            filesize = os.path.getsize(filepath)
-
-            # Send header
-            header = f"FILE:{filename}:{filesize}\n"
-            self.conn.sendall(header.encode())
-
-            # Send binary data with length prefix
-            with open(filepath, "rb") as f:
-                while True:
-                    chunk = f.read(MAX_FILE_CHUNK_SIZE)
-                    if not chunk:
-                        break
-
-                    # Send length followed by binary data
-                    length = len(chunk)
-                    # Convert length to bytes manually (4 bytes, big endian)
-                    length_bytes = (
-                        (length >> 24 & 0xFF).to_bytes(1, byteorder="big")
-                        + (length >> 16 & 0xFF).to_bytes(1, byteorder="big")
-                        + (length >> 8 & 0xFF).to_bytes(1, byteorder="big")
-                        + (length & 0xFF).to_bytes(1, byteorder="big")
-                    )
-                    self.conn.sendall(length_bytes)
-                    self.conn.sendall(chunk)  # Send raw binary
-
-            # Send end marker
-            self.conn.sendall(b"ENDFILE\n")
-
-        except Exception as e:
-            print(f"[ERROR] {e}")
-
     # def send_file(self, filepath):
-    #     """Send a file to the connected peer with improved framing"""
+    #     """Send a file using a simpler protocol"""
     #     try:
-    #         # Get file details
     #         filename = os.path.basename(filepath)
     #         filesize = os.path.getsize(filepath)
 
-    #         # Send file header with newline delimiter
-    #         header = f"{FILE_HEADER}{filename}:{filesize}\n"
+    #         # Send header
+    #         header = f"FILE:{filename}:{filesize}\n"
     #         self.conn.sendall(header.encode())
 
-    #         # Send file in chunks
-    #         bytes_sent = 0
-    #         chunk_count = 0
+    #         # Send binary data with length prefix
     #         with open(filepath, "rb") as f:
-    #             self.new_message.emit(f"[Sending file: {filename}]")
-
-    #             while bytes_sent < filesize:
-    #                 # Read a chunk of data
+    #             while True:
     #                 chunk = f.read(MAX_FILE_CHUNK_SIZE)
     #                 if not chunk:
     #                     break
 
-    #                 # Encode the chunk for sending over text-based protocol
-    #                 encoded_chunk = base64.b64encode(chunk).decode()
+    #                 # Send length followed by binary data
+    #                 length = len(chunk)
+    #                 # Convert length to bytes manually (4 bytes, big endian)
+    #                 length_bytes = (
+    #                     (length >> 24 & 0xFF).to_bytes(1, byteorder="big")
+    #                     + (length >> 16 & 0xFF).to_bytes(1, byteorder="big")
+    #                     + (length >> 8 & 0xFF).to_bytes(1, byteorder="big")
+    #                     + (length & 0xFF).to_bytes(1, byteorder="big")
+    #                 )
+    #                 self.conn.sendall(length_bytes)
+    #                 self.conn.sendall(chunk)  # Send raw binary
 
-    #                 # Include the length of the encoded data for proper framing
-    #                 # Add newline delimiter for each chunk
-    #                 chunk_msg = f"{FILE_CHUNK}{len(encoded_chunk)}:{encoded_chunk}\n"
-    #                 self.conn.sendall(chunk_msg.encode())
-
-    #                 bytes_sent += len(chunk)
-    #                 chunk_count += 1
-    #                 print(f"[DEBUG] Sent chunk {chunk_count}, size: {len(chunk)} bytes")
-
-    #         # Send file end marker with newline
-    #         self.conn.sendall(f"{FILE_END}{filename}\n".encode())
-    #         self.new_message.emit(f"[File sent: {filename}]")
+    #         # Send end marker
+    #         self.conn.sendall(b"ENDFILE\n")
 
     #     except Exception as e:
-    #         print(f"[FILE SEND ERROR] {e}")
-    #         import traceback
+    #         print(f"[ERROR] {e}")
 
-    #         traceback.print_exc()
-    #         self.new_message.emit(f"[Failed to send file: {e}]")
+    def send_file(self, filepath):
+        """Send a file to the connected peer with improved framing"""
+        try:
+            # Get file details
+            filename = os.path.basename(filepath)
+            filesize = os.path.getsize(filepath)
+
+            # Send file header with newline delimiter
+            header = f"{FILE_HEADER}{filename}:{filesize}\n"
+            self.conn.sendall(header.encode())
+
+            # Send file in chunks
+            bytes_sent = 0
+            chunk_count = 0
+            with open(filepath, "rb") as f:
+                self.new_message.emit(f"[Sending file: {filename}]")
+
+                while bytes_sent < filesize:
+                    # Read a chunk of data
+                    chunk = f.read(MAX_FILE_CHUNK_SIZE)
+                    if not chunk:
+                        break
+
+                    # Encode the chunk for sending over text-based protocol
+                    encoded_chunk = base64.b64encode(chunk).decode()
+
+                    # Include the length of the encoded data for proper framing
+                    # Add newline delimiter for each chunk
+                    chunk_msg = f"{FILE_CHUNK}{len(encoded_chunk)}:{encoded_chunk}\n"
+                    self.conn.sendall(chunk_msg.encode())
+
+                    bytes_sent += len(chunk)
+                    chunk_count += 1
+                    print(f"[DEBUG] Sent chunk {chunk_count}, size: {len(chunk)} bytes")
+
+            # Send file end marker with newline
+            self.conn.sendall(f"{FILE_END}{filename}\n".encode())
+            self.new_message.emit(f"[File sent: {filename}]")
+
+        except Exception as e:
+            print(f"[FILE SEND ERROR] {e}")
+            import traceback
+
+            traceback.print_exc()
+            self.new_message.emit(f"[Failed to send file: {e}]")
 
     def receive_loop(self):
         """Background thread that receives messages with improved buffer handling"""
