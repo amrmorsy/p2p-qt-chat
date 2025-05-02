@@ -1,34 +1,34 @@
-import sys
-import socket
-import threading
-import time
+import base64
 import ipaddress
 import os
-import struct
-import base64
+import socket
+import sys
+import threading
+import time
+
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QListWidget,
-    QLineEdit,
-    QTextEdit,
-    QLabel,
     QDialog,
     QFileDialog,
-    QProgressBar,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMainWindow,
     QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import QTimer, Signal, QObject, Qt
 
 # Network configuration constants
 BROADCAST_PORT = 54545
 DEFAULT_CHAT_PORT = 54546
 BROADCAST_INTERVAL = 2  # Seconds between broadcasts
-PEER_TIMEOUT = 10       # Seconds until a peer is considered offline
+PEER_TIMEOUT = 10  # Seconds until a peer is considered offline
 MAX_FILE_CHUNK_SIZE = 8192  # 8KB chunks for file transfer
 
 # Protocol markers for message types
@@ -39,6 +39,7 @@ FILE_END = "FEND:"
 
 # Get this machine's name for identification
 peer_name = socket.gethostname()
+
 
 def get_local_ip():
     """Get the local IP address of this machine"""
@@ -52,6 +53,7 @@ def get_local_ip():
     except Exception:
         # Fallback method if network is unavailable
         return socket.gethostbyname(socket.gethostname())
+
 
 # Get local IP once at startup
 peer_ip = get_local_ip()
@@ -82,8 +84,10 @@ def find_available_port(start_port, max_attempts=10):
             continue
     return None
 
+
 # Store discovered peers: peer_id -> (ip, port, last_seen)
 peers = {}
+
 
 def get_broadcast_address():
     """Calculate the broadcast address for the local network"""
@@ -94,8 +98,10 @@ def get_broadcast_address():
         print(f"[ERROR] Broadcast calculation failed: {e}")
         return "255.255.255.255"  # Fallback to global broadcast
 
+
 class ChatSession(QObject):
     """Handles the network communication for a single chat"""
+
     new_message = Signal(str)  # Signal emitted when a message is received
     file_progress = Signal(str, int, int)  # filename, bytes_received, total_size
     file_received = Signal(str)  # filename
@@ -119,147 +125,249 @@ class ChatSession(QObject):
             print(f"[SEND ERROR] {e}")
             self.new_message.emit("[Send Failed]")
 
-    def send_file(self, filepath):
-        """Send a file to the connected peer"""
-        try:
-            # Get file details
-            filename = os.path.basename(filepath)
-            filesize = os.path.getsize(filepath)
 
-            # Send file header
-            header = f"{FILE_HEADER}{filename}:{filesize}"
-            self.conn.sendall(header.encode())
+def send_file(self, filepath):
+    """Send a file to the connected peer with improved framing"""
+    try:
+        # Get file details
+        filename = os.path.basename(filepath)
+        filesize = os.path.getsize(filepath)
 
-            # Send file in chunks
-            bytes_sent = 0
-            with open(filepath, 'rb') as f:
-                self.new_message.emit(f"[Sending file: {filename}]")
+        # Send file header with newline delimiter
+        header = f"{FILE_HEADER}{filename}:{filesize}\n"
+        self.conn.sendall(header.encode())
 
-                while bytes_sent < filesize:
-                    # Read a chunk of data
-                    chunk = f.read(MAX_FILE_CHUNK_SIZE)
-                    if not chunk:
-                        break
+        # Send file in chunks
+        bytes_sent = 0
+        with open(filepath, "rb") as f:
+            self.new_message.emit(f"[Sending file: {filename}]")
 
-                    # Encode the chunk for sending over text-based protocol
-                    encoded_chunk = base64.b64encode(chunk).decode()
-                    chunk_msg = f"{FILE_CHUNK}{encoded_chunk}"
-                    self.conn.sendall(chunk_msg.encode())
-
-                    bytes_sent += len(chunk)
-                    # Could emit progress here for UI updates
-
-            # Send file end marker
-            self.conn.sendall(f"{FILE_END}{filename}".encode())
-            self.new_message.emit(f"[File sent: {filename}]")
-
-        except Exception as e:
-            print(f"[FILE SEND ERROR] {e}")
-            self.new_message.emit(f"[Failed to send file: {e}]")
-
-    def receive_loop(self):
-        """Background thread that receives messages"""
-        print("[DEBUG] Starting receive loop")
-        buffer = ""
-
-        while True:
-            try:
-                data = self.conn.recv(MAX_FILE_CHUNK_SIZE)
-                if not data:
-                    print("[DEBUG] Connection closed by peer")
+            while bytes_sent < filesize:
+                # Read a chunk of data
+                chunk = f.read(MAX_FILE_CHUNK_SIZE)
+                if not chunk:
                     break
 
-                # Add received data to buffer and process
-                buffer += data.decode()
+                # Encode the chunk for sending over text-based protocol
+                encoded_chunk = base64.b64encode(chunk).decode()
 
-                # Process complete messages in buffer
-                while True:
-                    # Check for different message types
-                    if buffer.startswith(TEXT_MESSAGE):
-                        # Text message
-                        self.new_message.emit(buffer[len(TEXT_MESSAGE):])
-                        buffer = ""
+                # Include the length of the encoded data for proper framing
+                chunk_msg = f"{FILE_CHUNK}{len(encoded_chunk)}:{encoded_chunk}"
+                self.conn.sendall(chunk_msg.encode())
+
+                bytes_sent += len(chunk)
+                # Optionally wait for acknowledgment here
+
+        # Send file end marker with newline
+        self.conn.sendall(f"{FILE_END}{filename}\n".encode())
+        self.new_message.emit(f"[File sent: {filename}]")
+
+    except Exception as e:
+        print(f"[FILE SEND ERROR] {e}")
+        import traceback
+
+        traceback.print_exc()
+        self.new_message.emit(f"[Failed to send file: {e}]")
+
+
+def receive_loop(self):
+    """Background thread that receives messages with improved buffer handling"""
+    print("[DEBUG] Starting receive loop")
+    buffer = ""
+
+    while True:
+        try:
+            # Receive data and add to buffer
+            data = self.conn.recv(MAX_FILE_CHUNK_SIZE)
+            if not data:
+                print("[DEBUG] Connection closed by peer")
+                break
+
+            # Add received data to buffer
+            buffer += data.decode(
+                "utf-8", errors="replace"
+            )  # Handle potential encoding issues
+
+            # Process buffer until we can't extract complete messages
+            while len(buffer) > 0:
+                print(f"[DEBUG] Buffer length: {len(buffer)}")
+
+                # TEXT MESSAGE
+                if buffer.startswith(TEXT_MESSAGE):
+                    # Look for end of message marker (could use newline or another delimiter)
+                    end_idx = buffer.find("\n", len(TEXT_MESSAGE))
+                    if end_idx == -1:  # Message isn't complete yet
                         break
 
-                    elif buffer.startswith(FILE_HEADER):
-                        # Start of file transfer
-                        header_data = buffer[len(FILE_HEADER):].split(':', 1)
-                        if len(header_data) == 2:
-                            self.current_file = header_data[0]
-                            self.file_size = int(header_data[1])
-                            self.bytes_received = 0
-                            self.file_data = bytearray()
+                    # Extract the complete message
+                    message = buffer[len(TEXT_MESSAGE) : end_idx]
+                    buffer = buffer[
+                        end_idx + 1 :
+                    ]  # Remove processed data, keep the rest
+                    self.new_message.emit(message)
+                    continue  # Check for more complete messages
 
-                            self.new_message.emit(f"[Receiving file: {self.current_file} ({self.file_size} bytes)]")
-                            buffer = ""
-                            break
-                        else:
-                            # Incomplete header, wait for more data
-                            break
+                # FILE HEADER
+                elif buffer.startswith(FILE_HEADER):
+                    header_end = buffer.find("\n", len(FILE_HEADER))
+                    if header_end == -1:  # Incomplete header
+                        break
 
-                    elif buffer.startswith(FILE_CHUNK) and self.current_file:
-                        # File chunk
-                        encoded_chunk = buffer[len(FILE_CHUNK):]
+                    header_data = buffer[len(FILE_HEADER) : header_end].split(":", 1)
+                    if len(header_data) == 2:
+                        self.current_file = header_data[0]
+                        self.file_size = int(header_data[1])
+                        self.bytes_received = 0
+                        self.file_data = bytearray()
+
+                        self.new_message.emit(
+                            f"[Receiving file: {self.current_file} ({self.file_size} bytes)]"
+                        )
+                        buffer = buffer[header_end + 1 :]  # Keep remaining data
+                        continue  # Process more messages if present
+                    else:
+                        # Malformed header, discard and continue
+                        print("[ERROR] Malformed file header")
+                        buffer = buffer[header_end + 1 :]
+
+                # FILE CHUNK
+                elif buffer.startswith(FILE_CHUNK) and self.current_file:
+                    # Format: "CHUNK:<length>:<base64data>"
+                    first_colon = buffer.find(":", len(FILE_CHUNK))
+                    if first_colon == -1:
+                        break  # Incomplete header
+
+                    second_colon = buffer.find(":", first_colon + 1)
+                    if second_colon == -1:
+                        break  # Incomplete header
+
+                    try:
+                        chunk_length = int(buffer[first_colon + 1 : second_colon])
+
+                        # Check if we have the complete chunk data
+                        if len(buffer) < second_colon + 1 + chunk_length:
+                            print(
+                                f"[DEBUG] Waiting for complete chunk: have {len(buffer) - second_colon - 1}/{chunk_length}"
+                            )
+                            break  # Wait for more data
+
+                        # Extract the chunk
+                        encoded_chunk = buffer[
+                            second_colon + 1 : second_colon + 1 + chunk_length
+                        ]
+
+                        # Process the chunk
                         try:
-                            # Try to decode - if incomplete, this will fail
                             chunk = base64.b64decode(encoded_chunk)
-
-                            # Add to file data
                             self.file_data.extend(chunk)
                             self.bytes_received += len(chunk)
 
                             # Update progress
                             self.file_progress.emit(
-                                self.current_file,
-                                self.bytes_received,
-                                self.file_size
+                                self.current_file, self.bytes_received, self.file_size
                             )
 
-                            buffer = ""
-                            break
-                        except:
-                            # Incomplete chunk, wait for more data
-                            break
+                            # Remove processed data
+                            buffer = buffer[second_colon + 1 + chunk_length :]
 
-                    elif buffer.startswith(FILE_END) and self.current_file:
-                        # End of file
-                        filename = buffer[len(FILE_END):]
-                        if filename == self.current_file:
-                            # Save the file
-                            downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-                            if not os.path.exists(downloads_dir):
-                                downloads_dir = os.getcwd()
+                            # Send acknowledgment (if implementing flow control)
+                            # self.conn.sendall(f"ACK:{self.bytes_received}\n".encode())
 
-                            save_path = os.path.join(downloads_dir, self.current_file)
-                            try:
-                                with open(save_path, 'wb') as f:
-                                    f.write(self.file_data)
+                            continue  # Process more if available
 
-                                self.new_message.emit(f"[File received: {self.current_file}]")
-                                self.file_received.emit(save_path)
-                            except Exception as e:
-                                self.new_message.emit(f"[Error saving file: {e}]")
-                                self.file_error.emit(self.current_file, str(e))
+                        except Exception as e:
+                            print(f"[ERROR] Failed to decode chunk: {e}")
+                            # Skip this chunk and try to recover
+                            buffer = buffer[second_colon + 1 + chunk_length :]
 
-                            # Reset file transfer state
-                            self.current_file = None
-                            self.file_data = None
+                    except ValueError as e:
+                        print(f"[ERROR] Invalid chunk length: {e}")
+                        # Try to recover by skipping to next line
+                        next_line = buffer.find("\n", len(FILE_CHUNK))
+                        if next_line != -1:
+                            buffer = buffer[next_line + 1 :]
+                        else:
+                            # If recovery fails, clear buffer and start fresh
                             buffer = ""
                             break
 
-                    else:
-                        # Unknown or incomplete message, wait for more data
+                # FILE END
+                elif buffer.startswith(FILE_END) and self.current_file:
+                    end_idx = buffer.find("\n", len(FILE_END))
+                    if end_idx == -1:  # Incomplete marker
                         break
 
-            except Exception as e:
-                print(f"[RECEIVE ERROR] {e}")
-                break
+                    filename = buffer[len(FILE_END) : end_idx]
+                    buffer = buffer[end_idx + 1 :]  # Keep remaining data
+
+                    if filename == self.current_file:
+                        # Verify file integrity
+                        if self.bytes_received != self.file_size:
+                            self.new_message.emit(
+                                f"[Warning] File size mismatch: expected {self.file_size}, got {self.bytes_received} bytes"
+                            )
+
+                        # Save the file
+                        downloads_dir = os.path.join(
+                            os.path.expanduser("~"), "Downloads"
+                        )
+                        if not os.path.exists(downloads_dir):
+                            downloads_dir = os.getcwd()
+
+                        save_path = os.path.join(downloads_dir, self.current_file)
+                        try:
+                            with open(save_path, "wb") as f:
+                                f.write(self.file_data)
+
+                            self.new_message.emit(
+                                f"[File received: {self.current_file}]"
+                            )
+                            self.file_received.emit(save_path)
+                        except Exception as e:
+                            self.new_message.emit(f"[Error saving file: {e}]")
+                            self.file_error.emit(self.current_file, str(e))
+
+                        # Reset file transfer state
+                        self.current_file = None
+                        self.file_data = None
+                        continue  # Process more messages if present
+
+                else:
+                    # Unrecognized message type, try to find a known prefix
+                    found = False
+                    for prefix in [TEXT_MESSAGE, FILE_HEADER, FILE_CHUNK, FILE_END]:
+                        next_prefix = buffer.find(prefix)
+                        if next_prefix > 0:
+                            print(
+                                f"[DEBUG] Skipping to next recognizable message at position {next_prefix}"
+                            )
+                            buffer = buffer[next_prefix:]
+                            found = True
+                            break
+
+                    if not found:
+                        # If no recognizable message is found, discard the first character and try again
+                        print("[DEBUG] Discarding unrecognized data")
+                        buffer = buffer[1:]
+
+                    # If buffer is too small to contain a message, wait for more data
+                    if len(buffer) < 5:
+                        break
+
+        except Exception as e:
+            print(f"[RECEIVE ERROR] {e}")
+            import traceback
+
+            traceback.print_exc()
+            break
 
         self.new_message.emit("[Connection Closed]")
         self.conn.close()
 
+
 class ChatWindow(QDialog):
     """Dialog window for a single chat conversation"""
+
     def __init__(self, conn, title):
         super().__init__()
         self.setWindowTitle(title)
@@ -328,19 +436,18 @@ class ChatWindow(QDialog):
             size_mb = os.path.getsize(filepath) / (1024 * 1024)
             if size_mb > 10:  # Warn if > 10MB
                 reply = QMessageBox.question(
-                    self, 'Confirm File Send',
+                    self,
+                    "Confirm File Send",
                     f"The file is {size_mb:.1f}MB. Are you sure you want to send it?",
                     QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No
+                    QMessageBox.No,
                 )
                 if reply == QMessageBox.No:
                     return
 
             # Start file sending in a separate thread to keep UI responsive
             threading.Thread(
-                target=self.session.send_file,
-                args=(filepath,),
-                daemon=True
+                target=self.session.send_file, args=(filepath,), daemon=True
             ).start()
 
     def update_file_progress(self, filename, received, total):
@@ -358,17 +465,18 @@ class ChatWindow(QDialog):
     def file_received(self, filepath):
         """Handle notification of completed file reception"""
         reply = QMessageBox.question(
-            self, 'File Received',
+            self,
+            "File Received",
             f"File saved to: {filepath}\nDo you want to open it?",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             # Open file with default application
             # This is platform-specific
-            if sys.platform == 'win32':
+            if sys.platform == "win32":
                 os.startfile(filepath)
-            elif sys.platform == 'darwin':  # macOS
+            elif sys.platform == "darwin":  # macOS
                 os.system(f'open "{filepath}"')
             else:  # Linux
                 os.system(f'xdg-open "{filepath}"')
@@ -376,12 +484,13 @@ class ChatWindow(QDialog):
     def file_error(self, filename, error):
         """Handle file transfer errors"""
         QMessageBox.warning(
-            self, 'File Transfer Error',
-            f"Error with file {filename}: {error}"
+            self, "File Transfer Error", f"Error with file {filename}: {error}"
         )
+
 
 class MainWindow(QMainWindow):
     """Main application window that shows peer list and manages chat windows"""
+
     # Signal to safely open chat windows from non-GUI threads
     open_chat_signal = Signal(object, str)
 
@@ -452,7 +561,9 @@ class MainWindow(QMainWindow):
             sock.bind(("0.0.0.0", BROADCAST_PORT))
         except OSError as e:
             if e.errno == 48:  # Address already in use
-                print(f"[WARN] Broadcast port {BROADCAST_PORT} is in use, trying to find an available port...")
+                print(
+                    f"[WARN] Broadcast port {BROADCAST_PORT} is in use, trying to find an available port..."
+                )
                 available_port = find_available_port(BROADCAST_PORT)
                 if available_port:
                     print(f"[INFO] Using alternative broadcast port: {available_port}")
@@ -493,7 +604,9 @@ class MainWindow(QMainWindow):
             sock.bind((peer_ip, CHAT_PORT))
         except OSError as e:
             if e.errno == 48:  # Address already in use
-                print(f"[WARN] Chat port {CHAT_PORT} is in use, trying to find an available port...")
+                print(
+                    f"[WARN] Chat port {CHAT_PORT} is in use, trying to find an available port..."
+                )
                 available_port = find_available_port(CHAT_PORT)
                 if available_port:
                     print(f"[INFO] Using alternative chat port: {available_port}")
@@ -554,6 +667,7 @@ class MainWindow(QMainWindow):
         win = ChatWindow(conn, title)
         win.show()
         self.chat_windows.append(win)  # ✅ Keep reference so window stays alive
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
