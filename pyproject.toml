@@ -1,7 +1,7 @@
 [project]
-name = "p2p-py-take-1"
+name = "p2p-qt-chat"
 version = "0.1.0"
-description = "Add your description here"
+description = "A lightweight, zero-configuration peer-to-peer messaging application for local networks. This serverless Python application automatically discovers other users on your LAN and enables direct messaging without requiring any central infrastructure."
 readme = "README.md"
 requires-python = ">=3.13"
 authors = [{ name = "Amr Morsy" }]
