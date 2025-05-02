@@ -63,6 +63,25 @@ else:
     # When imported (like for testing), use the default port
     CHAT_PORT = DEFAULT_CHAT_PORT
 
+
+def find_available_port(start_port, max_attempts=10):
+    """
+    Try to find an available port starting from start_port.
+    Returns the available port or None if none found after max_attempts.
+    """
+    for port_offset in range(max_attempts):
+        port = start_port + port_offset
+        try:
+            # Create a test socket
+            test_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            test_socket.bind(("0.0.0.0", port))
+            test_socket.close()
+            return port
+        except OSError:
+            continue
+    return None
+
 # Store discovered peers: peer_id -> (ip, port, last_seen)
 peers = {}
 
@@ -424,9 +443,31 @@ class MainWindow(QMainWindow):
 
     def listen_for_broadcasts(self):
         """Listen for broadcast announcements from other peers"""
+        global BROADCAST_PORT
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", BROADCAST_PORT))
+
+        try:
+            sock.bind(("0.0.0.0", BROADCAST_PORT))
+        except OSError as e:
+            if e.errno == 48:  # Address already in use
+                print(f"[WARN] Broadcast port {BROADCAST_PORT} is in use, trying to find an available port...")
+                available_port = find_available_port(BROADCAST_PORT)
+                if available_port:
+                    print(f"[INFO] Using alternative broadcast port: {available_port}")
+                    BROADCAST_PORT = available_port
+                    # Create a new socket with the new port
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.bind(("0.0.0.0", BROADCAST_PORT))
+                else:
+                    print("[ERROR] Could not find an available broadcast port")
+                    return
+            else:
+                print(f"[ERROR] Socket error: {e}")
+                return
         while True:
             try:
                 data, addr = sock.recvfrom(1024)
@@ -443,15 +484,36 @@ class MainWindow(QMainWindow):
 
     def listen_for_incoming_chat(self):
         """Accept incoming TCP connections for chat"""
+        global CHAT_PORT
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
         try:
             sock.bind((peer_ip, CHAT_PORT))
-            sock.listen()
-            print(f"[TCP LISTENING] {peer_ip}:{CHAT_PORT}")
-        except Exception as e:
-            print(f"[ERROR] TCP bind failed: {e}")
-            return
+        except OSError as e:
+            if e.errno == 48:  # Address already in use
+                print(f"[WARN] Chat port {CHAT_PORT} is in use, trying to find an available port...")
+                available_port = find_available_port(CHAT_PORT)
+                if available_port:
+                    print(f"[INFO] Using alternative chat port: {available_port}")
+                    CHAT_PORT = available_port
+                    # Update the window title to show the new port
+                    self.setWindowTitle(f"P2P Chat - {peer_name} ({CHAT_PORT})")
+                    # Create a new socket with the new port
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.bind((peer_ip, CHAT_PORT))
+                else:
+                    print("[ERROR] Could not find an available chat port")
+                    return
+            else:
+                print(f"[ERROR] TCP bind failed: {e}")
+                return
+
+        sock.listen()
+        print(f"[TCP LISTENING] {peer_ip}:{CHAT_PORT}")
         while True:
             conn, addr = sock.accept()
             # Use signal to safely create UI elements from this thread
